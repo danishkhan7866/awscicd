@@ -1,0 +1,100 @@
+name: CI-CD
+
+on:
+  push:
+    branches: [main, staging]
+
+env:
+  IMAGE: ${{ secrets.DOCKER_USERNAME }}/demo-app
+
+jobs:
+
+# -------- BUILD & PUSH --------
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Login Docker
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build
+        run: docker build -t $IMAGE:${{ github.sha }} .
+
+      - name: Push
+        run: docker push $IMAGE:${{ github.sha }}
+
+# -------- DEPLOY --------
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Select Env
+        id: env
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "HOST=${{ secrets.EC2_HOST_PROD }}" >> $GITHUB_OUTPUT
+          else
+            echo "HOST=${{ secrets.EC2_HOST_STAGING }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ steps.env.outputs.HOST }} << EOF
+
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/demo-app:${{ github.sha }}
+
+          # Login to private repo
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+          docker pull \$IMAGE
+
+          # Save current container image (for rollback)
+          docker inspect demo-app --format='{{.Config.Image}}' > last_image.txt || true
+
+          docker stop demo-app || true
+          docker rm demo-app || true
+
+          docker run -d -p 80:3000 --name demo-app \$IMAGE
+
+          EOF
+
+# -------- VERIFY + ROLLBACK --------
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Health Check
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST_PROD }} << EOF
+
+          sleep 10
+
+          if curl -f http://localhost > /dev/null; then
+            echo "App is healthy ✅"
+          else
+            echo "App failed ❌ Rolling back..."
+
+            LAST_IMAGE=\$(cat last_image.txt)
+
+            docker stop demo-app || true
+            docker rm demo-app || true
+
+            docker run -d -p 80:3000 --name demo-app \$LAST_IMAGE
+          fi
+
+          EOF
