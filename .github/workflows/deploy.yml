@@ -62,7 +62,7 @@ jobs:
           docker stop demo-app || true
           docker rm demo-app || true
 
-          docker run -d -p 80:3000 --name demo-app \$IMAGE
+          docker run -d -p 3001:3000 --name demo-app \$IMAGE
 
           EOF
 
@@ -94,7 +94,7 @@ jobs:
             docker stop demo-app || true
             docker rm demo-app || true
 
-            docker run -d -p 80:3000 --name demo-app \$LAST_IMAGE
+            docker run -d -p 3001:3000 --name demo-app \$LAST_IMAGE
           fi
 
           EOF
