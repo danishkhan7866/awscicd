@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Login to Docker
+      - name: Login Docker
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Build Image
@@ -28,7 +28,7 @@ jobs:
         run: docker push $IMAGE:${{ github.sha }}
 
 # ------------------------
-# DEPLOY
+# DEPLOY TO STAGING
 # ------------------------
   deploy:
     needs: build
@@ -43,33 +43,34 @@ jobs:
           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      # ---------------- DEBUG STEP (IMPORTANT) ----------------
-      - name: Debug Secrets (HOST & USER)
+      # ---------------- DEBUG ----------------
+      - name: Debug Secrets
         run: |
-          echo "HOST='${{ secrets.EC2_HOST_STAGING }}'"
-          echo "USER='${{ secrets.EC2_USER }}'"
+          echo "EC2_USER='${{ secrets.EC2_USER }}'"
+          echo "EC2_HOST='${{ secrets.EC2_HOST_STAGING }}'"
 
       # ---------------- DEPLOY ----------------
       - name: Deploy to EC2
         run: |
           set -e
 
-          HOST="${{ secrets.EC2_HOST_STAGING }}"
           USER="${{ secrets.EC2_USER }}"
+          HOST="${{ secrets.EC2_HOST_STAGING }}"
 
-          echo "Connecting to: $USER@$HOST"
+          echo "Connecting to $USER@$HOST"
+
+          # Validate
+          if [ -z "$USER" ]; then
+            echo "❌ EC2_USER is empty"
+            exit 1
+          fi
 
           if [ -z "$HOST" ]; then
-            echo "❌ ERROR: EC2_HOST_STAGING is EMPTY"
+            echo "❌ EC2_HOST_STAGING is empty"
             exit 1
           fi
 
-          if [ -z "$USER" ]; then
-            echo "❌ ERROR: EC2_USER is EMPTY"
-            exit 1
-          fi
-
-          ssh -o StrictHostKeyChecking=no ${USER}@${HOST} << 'EOF'
+          ssh -o StrictHostKeyChecking=no $USER@$HOST << 'EOF'
 
           set -e
 
@@ -78,19 +79,20 @@ jobs:
           echo "Logging into Docker..."
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-          echo "Pulling image..."
-          docker pull $IMAGE
-
-          echo "Saving old image for rollback..."
+          echo "Saving previous image..."
           docker inspect demo-app --format='{{.Config.Image}}' > last_image.txt || true
 
-          echo "Restarting container..."
+          echo "Pulling new image..."
+          docker pull $IMAGE
+
+          echo "Stopping old container..."
           docker stop demo-app || true
           docker rm demo-app || true
 
+          echo "Starting new container..."
           docker run -d -p 3001:3000 --name demo-app $IMAGE
 
-          echo "Deployment completed"
+          echo "Deployment successful"
 
           EOF
 
@@ -111,10 +113,10 @@ jobs:
 
       - name: Health Check + Rollback
         run: |
-          HOST="${{ secrets.EC2_HOST_STAGING }}"
           USER="${{ secrets.EC2_USER }}"
+          HOST="${{ secrets.EC2_HOST_STAGING }}"
 
-          ssh -o StrictHostKeyChecking=no ${USER}@${HOST} << 'EOF'
+          ssh -o StrictHostKeyChecking=no $USER@$HOST << 'EOF'
 
           set -e
 
